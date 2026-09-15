@@ -1,13 +1,8 @@
 name: Node.js compiled --shared-builtin-undici/undici-path CI
 
 on:
-  push:
-    branches:
-     - main
-     - current
-     - next
-     - 'v*'
-  pull_request:
+  # SEAL: push/pull_request triggers removed so this workflow cannot fire on the build fork.
+  workflow_dispatch:
 
 permissions:
   contents: read

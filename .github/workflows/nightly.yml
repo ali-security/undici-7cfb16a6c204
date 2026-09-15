@@ -1,9 +1,8 @@
 name: Nightly tests
 
 on:
+  # SEAL: schedule trigger removed so this workflow cannot fire on the build fork.
   workflow_dispatch:
-  schedule:
-    - cron: "0 10 * * *"
 
 permissions:
   contents: read
