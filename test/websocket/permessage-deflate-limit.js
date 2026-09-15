@@ -421,3 +421,112 @@ test('Raw uncompressed payload over 64-bit extended limit is rejected', async (t
   assert.strictEqual(messageReceived, false, 'Raw uncompressed message over limit should be rejected')
   assert.strictEqual(client.readyState, WebSocket.CLOSED, 'Connection should be closed after exceeding limit')
 })
+
+test('cumulative payload size', (t, done) => {
+  const LIMIT = 100
+  const FRAGMENT_SIZE = 60
+  const NUM_FRAGMENTS = 10
+
+  const server = new WebSocketServer({ port: 0 })
+
+  server.on('connection', (ws) => {
+    const socket = ws._socket
+    const payload = Buffer.alloc(FRAGMENT_SIZE, 0x41)
+
+    for (let i = 0; i < NUM_FRAGMENTS; i++) {
+      const fin = i === NUM_FRAGMENTS - 1 ? 0x80 : 0x00
+      const opcode = i === 0 ? 0x02 : 0x00
+      const header = Buffer.alloc(2)
+      header[0] = fin | opcode
+      header[1] = FRAGMENT_SIZE
+      socket.write(header)
+      socket.write(payload)
+    }
+  })
+
+  const agent = new Agent({
+    webSocket: {
+      maxPayloadSize: LIMIT
+    }
+  })
+
+  const client = new WebSocket(`ws://127.0.0.1:${server.address().port}`, { dispatcher: agent })
+
+  t.after(async () => {
+    client.close()
+    server.close()
+    await agent.close()
+  })
+
+  client.onmessage = () => assert.fail('message should not be received')
+
+  client.addEventListener('error', (event) => {
+    assert.ok(event)
+    done()
+  })
+})
+
+test('cumulative payload size is enforced when a frame announces its length', (t, done) => {
+  // A first fragment sitting exactly on the limit does not trip the check that
+  // runs after the payload is buffered, so the only thing that can stop the
+  // peer from announcing yet another limit-sized continuation frame is the
+  // announce-time check - and that check has to account for the bytes that
+  // were already accumulated. The body of the second frame is deliberately
+  // never written: a parser that validates the announced length on its own
+  // waits for those bytes forever while holding onto the first fragment.
+  const LIMIT = 100
+
+  function maybeDone () {
+    if (++maybeDone.callCount === 2) {
+      done()
+    }
+  }
+
+  maybeDone.callCount = 0
+
+  const server = new WebSocketServer({ port: 0 })
+
+  server.on('connection', (ws) => {
+    ws.on('error', () => {})
+
+    ws.on('close', (code, reason) => {
+      assert.strictEqual(code, 1009)
+      assert.strictEqual(reason.toString(), 'Payload size exceeds maximum allowed size')
+      maybeDone()
+    })
+
+    const socket = ws._socket
+
+    // Binary frame, fin = 0, payload length === LIMIT (fills the whole budget).
+    socket.write(Buffer.from([0x02, LIMIT]))
+    socket.write(Buffer.alloc(LIMIT, 0x41))
+
+    // Continuation frame, fin = 1, announcing another LIMIT bytes. Header only.
+    socket.write(Buffer.from([0x80, LIMIT]))
+  })
+
+  const agent = new Agent({
+    webSocket: {
+      maxPayloadSize: LIMIT
+    }
+  })
+
+  const client = new WebSocket(`ws://127.0.0.1:${server.address().port}`, { dispatcher: agent })
+
+  t.after(async () => {
+    client.close()
+    server.close()
+    await agent.close()
+  })
+
+  client.onmessage = () => assert.fail('message should not be received')
+
+  client.addEventListener('error', () => {
+    assert.ok(true)
+  })
+
+  client.addEventListener('close', (event) => {
+    assert.strictEqual(event.code, 1006)
+    maybeDone()
+  })
+})
